@@ -1,0 +1,6 @@
+{
+  "appId": "com.neonsicrayis.game",
+  "appName": "Neon Sicrayis",
+  "webDir": "www",
+  "bundledWebRuntime": false
+}
