@@ -1,0 +1,352 @@
+<!DOCTYPE html>
+<html lang="tr">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0, maximum-scale=1.0, user-scalable=no">
+<title>Neon Sıçrayış</title>
+<style>
+  :root{
+    --bg-deep:#0b0b17;
+    --bg-mid:#151530;
+    --grid:#2a2a55;
+    --cyan:#4EE1D6;
+    --magenta:#FF3D81;
+    --amber:#FFC857;
+  }
+  *{margin:0;padding:0;box-sizing:border-box;-webkit-tap-highlight-color:transparent;}
+  html,body{
+    width:100%;height:100%;overflow:hidden;
+    background:var(--bg-deep);
+    font-family:'Segoe UI',system-ui,sans-serif;
+    touch-action:none;
+    overscroll-behavior:none;
+  }
+  #wrap{
+    position:relative;width:100%;height:100dvh;
+    display:flex;align-items:center;justify-content:center;
+  }
+  canvas{
+    display:block;background:linear-gradient(180deg,var(--bg-deep) 0%,var(--bg-mid) 100%);
+    touch-action:none;
+  }
+  #hud{
+    position:absolute;top:0;left:0;right:0;
+    display:flex;justify-content:space-between;align-items:flex-start;
+    padding:18px 20px;pointer-events:none;
+    color:var(--cyan);
+    text-shadow:0 0 8px rgba(78,225,214,0.7);
+    font-weight:700;letter-spacing:1px;
+  }
+  #score{font-size:28px;}
+  #best{font-size:14px;color:var(--amber);text-shadow:0 0 8px rgba(255,200,87,0.6);margin-top:4px;}
+  #overlay{
+    position:absolute;inset:0;
+    display:flex;flex-direction:column;align-items:center;justify-content:center;
+    background:rgba(11,11,23,0.88);
+    color:#fff;text-align:center;padding:24px;
+    transition:opacity .25s ease;
+  }
+  #overlay h1{
+    font-size:34px;color:var(--magenta);
+    text-shadow:0 0 16px rgba(255,61,129,0.8);
+    letter-spacing:2px;margin-bottom:10px;
+  }
+  #overlay p{color:#b9b9d6;font-size:15px;margin-bottom:26px;max-width:280px;line-height:1.5;}
+  #overlay .stat{font-size:16px;color:var(--amber);margin-bottom:6px;}
+  #playBtn{
+    padding:14px 38px;font-size:18px;font-weight:700;letter-spacing:1px;
+    border:2px solid var(--cyan);border-radius:999px;
+    background:transparent;color:var(--cyan);
+    box-shadow:0 0 18px rgba(78,225,214,0.5);
+    cursor:pointer;
+  }
+  #playBtn:active{background:var(--cyan);color:var(--bg-deep);}
+  .hidden{display:none !important;}
+</style>
+</head>
+<body>
+<div id="wrap">
+  <canvas id="game"></canvas>
+  <div id="hud">
+    <div>
+      <div id="score">0</div>
+      <div id="best">REKOR: 0</div>
+    </div>
+  </div>
+  <div id="overlay">
+    <h1 id="title">NEON SIÇRAYIŞ</h1>
+    <p id="subtitle">Ekrana dokun ve zıpla. Neon dikenlerden kaç, hızlandıkça hayatta kal!</p>
+    <div id="finalStats" class="hidden">
+      <div class="stat" id="finalScore"></div>
+    </div>
+    <button id="playBtn">BAŞLA</button>
+  </div>
+</div>
+
+<script>
+(function(){
+  const canvas = document.getElementById('game');
+  const ctx = canvas.getContext('2d');
+  const overlay = document.getElementById('overlay');
+  const title = document.getElementById('title');
+  const subtitle = document.getElementById('subtitle');
+  const playBtn = document.getElementById('playBtn');
+  const scoreEl = document.getElementById('score');
+  const bestEl = document.getElementById('best');
+  const finalStats = document.getElementById('finalStats');
+  const finalScore = document.getElementById('finalScore');
+
+  let W, H, DPR;
+  function resize(){
+    DPR = Math.min(window.devicePixelRatio || 1, 2);
+    W = window.innerWidth;
+    H = window.innerHeight;
+    canvas.width = W * DPR;
+    canvas.height = H * DPR;
+    canvas.style.width = W + 'px';
+    canvas.style.height = H + 'px';
+    ctx.setTransform(DPR,0,0,DPR,0,0);
+  }
+  window.addEventListener('resize', resize);
+  resize();
+
+  // ---- game state ----
+  const GROUND_RATIO = 0.78;
+  let groundY;
+  let player, obstacles, particles, gridOffset;
+  let score, speed, spawnTimer, spawnInterval, running, best;
+
+  const BOX = 34;
+
+  function resetState(){
+    groundY = H * GROUND_RATIO;
+    player = { x: W*0.22, y: groundY-BOX, vy:0, w:BOX, h:BOX, onGround:true, rot:0 };
+    obstacles = [];
+    particles = [];
+    gridOffset = 0;
+    score = 0;
+    speed = 6.2;
+    spawnTimer = 0;
+    spawnInterval = 85;
+    running = false;
+  }
+  resetState();
+
+  async function loadBest(){
+    try{
+      const r = await window.storage.get('neon-leap-best', false);
+      best = r ? parseInt(r.value, 10) || 0 : 0;
+    }catch(e){ best = 0; }
+    bestEl.textContent = 'REKOR: ' + best;
+  }
+  async function saveBest(){
+    try{ await window.storage.set('neon-leap-best', String(best), false); }catch(e){}
+  }
+  loadBest();
+
+  const GRAVITY = 0.85;
+  const JUMP_V = -14.5;
+
+  function jump(){
+    if(!running) return;
+    if(player.onGround){
+      player.vy = JUMP_V;
+      player.onGround = false;
+      spawnParticles(player.x+player.w/2, groundY, 6);
+    }
+  }
+
+  function spawnParticles(x,y,n){
+    for(let i=0;i<n;i++){
+      particles.push({
+        x, y,
+        vx:(Math.random()-0.5)*4,
+        vy:-Math.random()*3-1,
+        life:30+Math.random()*10,
+        maxLife:40
+      });
+    }
+  }
+
+  function spawnObstacle(){
+    const h = 28 + Math.random()*36;
+    const type = Math.random() < 0.25 ? 'float' : 'spike';
+    obstacles.push({
+      x: W+20, y: type==='float' ? groundY-90-Math.random()*40 : groundY-h,
+      w: 26, h: type==='float'? 26 : h, type,
+      hue: Math.random()<0.5 ? 'magenta':'cyan'
+    });
+  }
+
+  function update(){
+    if(!running) return;
+
+    // player physics
+    player.vy += GRAVITY;
+    player.y += player.vy;
+    if(player.y >= groundY - player.h){
+      player.y = groundY - player.h;
+      if(!player.onGround){ spawnParticles(player.x+player.w/2, groundY, 8); }
+      player.vy = 0;
+      player.onGround = true;
+    }
+    player.rot = player.onGround ? 0 : Math.min(0.6, player.rot + 0.06);
+
+    // spawn obstacles
+    spawnTimer++;
+    if(spawnTimer > spawnInterval){
+      spawnTimer = 0;
+      spawnObstacle();
+      spawnInterval = Math.max(48, 85 - speed*2.2);
+    }
+
+    // move obstacles
+    for(let i=obstacles.length-1;i>=0;i--){
+      const o = obstacles[i];
+      o.x -= speed;
+      if(o.x + o.w < -20) obstacles.splice(i,1);
+
+      // collision (AABB, slightly forgiving)
+      const pad = 6;
+      if(player.x+pad < o.x+o.w && player.x+player.w-pad > o.x &&
+         player.y+pad < o.y+o.h && player.y+player.h-pad > o.y){
+        gameOver();
+        return;
+      }
+    }
+
+    // particles
+    for(let i=particles.length-1;i>=0;i--){
+      const p = particles[i];
+      p.x += p.vx; p.y += p.vy; p.vy += 0.15; p.life--;
+      if(p.life<=0) particles.splice(i,1);
+    }
+
+    gridOffset = (gridOffset + speed) % 48;
+    speed += 0.0022;
+    score += 1;
+    scoreEl.textContent = Math.floor(score/10);
+  }
+
+  function drawGrid(){
+    ctx.strokeStyle = 'rgba(42,42,85,0.9)';
+    ctx.lineWidth = 1;
+    for(let x=-48+  (-gridOffset%48); x<W+48; x+=48){
+      ctx.beginPath(); ctx.moveTo(x,0); ctx.lineTo(x,groundY); ctx.stroke();
+    }
+    for(let y=0;y<groundY;y+=48){
+      ctx.beginPath(); ctx.moveTo(0,y); ctx.lineTo(W,y); ctx.stroke();
+    }
+    // ground line glow
+    ctx.save();
+    ctx.shadowColor = '#4EE1D6';
+    ctx.shadowBlur = 14;
+    ctx.strokeStyle = '#4EE1D6';
+    ctx.lineWidth = 2;
+    ctx.beginPath(); ctx.moveTo(0,groundY); ctx.lineTo(W,groundY); ctx.stroke();
+    ctx.restore();
+  }
+
+  function drawPlayer(){
+    ctx.save();
+    ctx.translate(player.x+player.w/2, player.y+player.h/2);
+    ctx.rotate(player.rot);
+    ctx.shadowColor = '#FF3D81';
+    ctx.shadowBlur = 18;
+    ctx.fillStyle = '#FF3D81';
+    ctx.fillRect(-player.w/2,-player.h/2,player.w,player.h);
+    ctx.shadowBlur = 0;
+    ctx.fillStyle = 'rgba(255,255,255,0.9)';
+    ctx.fillRect(-player.w/2+6,-player.h/2+6,6,6);
+    ctx.restore();
+  }
+
+  function drawObstacles(){
+    for(const o of obstacles){
+      const color = o.hue === 'magenta' ? '#FF3D81' : '#4EE1D6';
+      ctx.save();
+      ctx.shadowColor = color;
+      ctx.shadowBlur = 14;
+      ctx.strokeStyle = color;
+      ctx.lineWidth = 2.5;
+      if(o.type === 'spike'){
+        ctx.beginPath();
+        ctx.moveTo(o.x, o.y+o.h);
+        ctx.lineTo(o.x+o.w/2, o.y);
+        ctx.lineTo(o.x+o.w, o.y+o.h);
+        ctx.closePath();
+        ctx.stroke();
+      } else {
+        ctx.beginPath();
+        ctx.arc(o.x+o.w/2, o.y+o.h/2, o.w/2, 0, Math.PI*2);
+        ctx.stroke();
+      }
+      ctx.restore();
+    }
+  }
+
+  function drawParticles(){
+    for(const p of particles){
+      const a = Math.max(0, p.life/p.maxLife);
+      ctx.fillStyle = `rgba(78,225,214,${a})`;
+      ctx.fillRect(p.x, p.y, 3, 3);
+    }
+  }
+
+  function draw(){
+    ctx.clearRect(0,0,W,H);
+    drawGrid();
+    drawObstacles();
+    drawParticles();
+    drawPlayer();
+  }
+
+  function loop(){
+    update();
+    draw();
+    requestAnimationFrame(loop);
+  }
+
+  function startGame(){
+    resetState();
+    running = true;
+    overlay.classList.add('hidden');
+  }
+
+  function gameOver(){
+    running = false;
+    const finalScoreVal = Math.floor(score/10);
+    if(finalScoreVal > best){
+      best = finalScoreVal;
+      bestEl.textContent = 'REKOR: ' + best;
+      saveBest();
+    }
+    title.textContent = 'ÇARPTIN!';
+    subtitle.classList.add('hidden');
+    finalStats.classList.remove('hidden');
+    finalScore.textContent = 'SKOR: ' + finalScoreVal + '   ·   REKOR: ' + best;
+    playBtn.textContent = 'TEKRAR OYNA';
+    overlay.classList.remove('hidden');
+  }
+
+  playBtn.addEventListener('click', () => {
+    title.textContent = 'NEON SIÇRAYIŞ';
+    subtitle.classList.remove('hidden');
+    finalStats.classList.add('hidden');
+    startGame();
+  });
+
+  // touch + mouse jump anywhere on canvas
+  function onPress(e){
+    e.preventDefault();
+    jump();
+  }
+  canvas.addEventListener('touchstart', onPress, {passive:false});
+  canvas.addEventListener('mousedown', onPress);
+  window.addEventListener('keydown', (e)=>{ if(e.code==='Space') jump(); });
+
+  loop();
+})();
+</script>
+</body>
+</html>
